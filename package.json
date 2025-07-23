@@ -1,0 +1,19 @@
+{
+  "name": "ecommerce-search-api",
+  "version": "1.0.0",
+  "description": "Performance Analysis of SQL and ElasticSearch",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neha-iitjdh/ecommerce-search-api.git"
+  },
+  "author": "Neha Sharma",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/neha-iitjdh/ecommerce-search-api/issues"
+  },
+  "homepage": "https://github.com/neha-iitjdh/ecommerce-search-api#readme"
+}
