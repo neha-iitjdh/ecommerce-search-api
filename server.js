@@ -1,178 +1,113 @@
 /**
- * Elasticsearch Configuration
- * Sets up connection to Elasticsearch
+ * Server Entry Point
+ * This file starts the Express server and handles graceful shutdown
  */
 
-require("dotenv").config();
+// Load environment variables first (must be at the top)
+require('dotenv').config();
 
-const { Client } = require("@elastic/elasticsearch");
-const config = require("./env");
+const app = require('./src/app');
+const { sequelize } = require('./src/config/database');
+const { testElasticsearchConnection } = require('./src/config/elasticsearch');
+
+// Get port from environment variables or use default
+const PORT = process.env.PORT || 3000;
+
+// Server instance (we'll use this for graceful shutdown)
+let server;
 
 /**
- * Create Elasticsearch client
+ * Start the server
  */
-const elasticsearchClient = new Client({
-  node: config.elasticsearch.node,
+async function startServer() {
+  try {
+    console.log('Starting E-Commerce Search API...\n');
 
-  // Authentication (if enabled)
-  ...(config.elasticsearch.username &&
-    config.elasticsearch.password && {
-      auth: {
-        username: config.elasticsearch.username,
-        password: config.elasticsearch.password,
-      },
-    }),
+    // Step 1: Test PostgreSQL connection
+    console.log('Testing PostgreSQL connection...');
+    await sequelize.authenticate();
+    console.log('PostgreSQL connected successfully\n');
 
-  // Request timeout
-  requestTimeout: 30000, // 30 seconds
+    // Step 2: Sync database models (create tables if they don't exist)
+    console.log('Syncing database models...');
+    await sequelize.sync({ alter: false }); // alter: false means don't modify existing tables
+    console.log('Database models synced\n');
 
-  // Retry on connection failure
-  maxRetries: 3,
+    // Step 3: Test Elasticsearch connection
+    console.log('Testing Elasticsearch connection...');
+    await testElasticsearchConnection();
+    console.log('Elasticsearch connected successfully\n');
 
-  // Log levels
-  log: config.nodeEnv === "development" ? "info" : "error",
+    // Step 4: Start Express server
+    server = app.listen(PORT, () => {
+      console.log('═══════════════════════════════════════════════════');
+      console.log(`Server is running on port ${PORT}`);
+      console.log(`API URL: http://localhost:${PORT}`);
+      console.log(`API Docs: http://localhost:${PORT}/api-docs`);
+      console.log(`Health Check: http://localhost:${PORT}/api/v1/admin/health`);
+      console.log('═══════════════════════════════════════════════════\n');
+      console.log('Press CTRL+C to stop the server\n');
+    });
+
+  } catch (error) {
+    console.error('Failed to start server:', error.message);
+    console.error('\nTroubleshooting:');
+    console.error('   1. Check if Docker containers are running: docker-compose ps');
+    console.error('   2. Check if .env file exists and has correct values');
+    console.error('   3. Try restarting containers: docker-compose restart\n');
+    process.exit(1); // Exit with error code
+  }
+}
+
+/**
+ * Graceful Shutdown
+ * This function runs when you press CTRL+C or the process is terminated
+ */
+async function gracefulShutdown(signal) {
+  console.log(`\n${signal} received. Starting graceful shutdown...`);
+
+  // Close the server (stop accepting new connections)
+  if (server) {
+    server.close(async () => {
+      console.log('HTTP server closed');
+
+      try {
+        // Close database connections
+        await sequelize.close();
+        console.log('PostgreSQL connection closed');
+
+        console.log('Graceful shutdown completed');
+        process.exit(0); // Exit successfully
+      } catch (error) {
+        console.error('Error during shutdown:', error.message);
+        process.exit(1); // Exit with error
+      }
+    });
+
+    // Force shutdown after 10 seconds if graceful shutdown fails
+    setTimeout(() => {
+      console.error('Forced shutdown after 10 seconds');
+      process.exit(1);
+    }, 10000);
+  } else {
+    process.exit(0);
+  }
+}
+
+// Listen for shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // Kubernetes/Docker stop
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));   // CTRL+C
+
+// Handle uncaught errors (shouldn't happen, but safety net)
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  gracefulShutdown('UNCAUGHT_EXCEPTION');
 });
 
-/**
- * Test Elasticsearch connection
- */
-async function testElasticsearchConnection() {
-  try {
-    // Ping Elasticsearch to check if it's alive
-    const ping = await elasticsearchClient.ping();
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Promise Rejection:', reason);
+  gracefulShutdown('UNHANDLED_REJECTION');
+});
 
-    if (!ping) {
-      throw new Error("Elasticsearch ping failed");
-    }
-
-    // Get cluster info
-    const info = await elasticsearchClient.info();
-
-    console.log("Elasticsearch connected successfully");
-    console.log(`   Version: ${info.version.number}`);
-    console.log(`   Cluster: ${info.cluster_name}`);
-
-    return true;
-  } catch (error) {
-    console.error("Unable to connect to Elasticsearch:", error.message);
-    throw error;
-  }
-}
-
-/**
- * Check if index exists
- * @param {string} indexName - Name of the index
- */
-async function indexExists(indexName) {
-  try {
-    return await elasticsearchClient.indices.exists({
-      index: indexName,
-    });
-  } catch (error) {
-    console.error(
-      `Error checking if index ${indexName} exists:`,
-      error.message
-    );
-    return false;
-  }
-}
-
-/**
- * Create index with mapping
- * @param {string} indexName - Name of the index
- * @param {object} mapping - Index mapping/schema
- */
-async function createIndex(indexName, mapping) {
-  try {
-    const exists = await indexExists(indexName);
-
-    if (exists) {
-      console.log(`Index ${indexName} already exists`);
-      return;
-    }
-
-    await elasticsearchClient.indices.create({
-      index: indexName,
-      body: mapping,
-    });
-
-    console.log(`Index ${indexName} created successfully`);
-  } catch (error) {
-    console.error(`Error creating index ${indexName}:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Delete index
- * @param {string} indexName - Name of the index
- */
-async function deleteIndex(indexName) {
-  try {
-    const exists = await indexExists(indexName);
-
-    if (!exists) {
-      console.log(`Index ${indexName} does not exist`);
-      return;
-    }
-
-    await elasticsearchClient.indices.delete({
-      index: indexName,
-    });
-
-    console.log(`Index ${indexName} deleted successfully`);
-  } catch (error) {
-    console.error(`Error deleting index ${indexName}:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Get index statistics
- * @param {string} indexName - Name of the index
- */
-async function getIndexStats(indexName) {
-  try {
-    const stats = await elasticsearchClient.indices.stats({
-      index: indexName,
-    });
-
-    return {
-      documentCount: stats._all.primaries.docs.count,
-      storeSize: stats._all.primaries.store.size_in_bytes,
-      indexingTotal: stats._all.primaries.indexing.index_total,
-      searchTotal: stats._all.primaries.search.query_total,
-    };
-  } catch (error) {
-    console.error(`Error getting stats for index ${indexName}:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Refresh index
- * Makes recent changes searchable immediately
- * @param {string} indexName - Name of the index
- */
-async function refreshIndex(indexName) {
-  try {
-    await elasticsearchClient.indices.refresh({
-      index: indexName,
-    });
-    console.log(`Index ${indexName} refreshed`);
-  } catch (error) {
-    console.error(`Error refreshing index ${indexName}:`, error.message);
-    throw error;
-  }
-}
-
-// Export client and helper functions
-module.exports = {
-  elasticsearchClient,
-  testElasticsearchConnection,
-  indexExists,
-  createIndex,
-  deleteIndex,
-  getIndexStats,
-  refreshIndex,
-};
+// Start the server
+startServer();
